@@ -13,7 +13,7 @@ def parse_inventory_files(folder_path):
 
     # --- 1. Regex Patterns ---
     
-    # Matches: "HOSTNAME#show inventory" AND "HOSTNAME# show inventory" (Nexus/IOS support)
+    # Matches: "HOSTNAME#show inventory" AND "HOSTNAME# show inventory"
     hostname_pattern = re.compile(r'^(.*?)#\s*show inventory', re.MULTILINE)
     
     # Matches: ...#show clock followed by the time on the next line
@@ -45,15 +45,12 @@ def parse_inventory_files(folder_path):
                 content = f.read()
                 
                 # --- Extract File-Level Info ---
-                
-                # Hostname
                 host_match = hostname_pattern.search(content)
                 if host_match:
                     current_hostname = host_match.group(1).strip()
                 else:
                     current_hostname = filename
 
-                # Clock / Time
                 clock_match = clock_pattern.search(content)
                 raw_time_string = clock_match.group(1).strip() if clock_match else None
 
@@ -61,7 +58,6 @@ def parse_inventory_files(folder_path):
                 if raw_time_string:
                     try:
                         dt = parser.parse(raw_time_string, fuzzy=True)
-                        # Force "naive" time (remove timezone) for sorting
                         current_clock_dt = dt.replace(tzinfo=None)
                     except:
                         current_clock_dt = None
@@ -76,14 +72,12 @@ def parse_inventory_files(folder_path):
                 for line in lines:
                     line = line.strip()
 
-                    # Check for Name/Descr
                     nd_match = name_descr_pattern.search(line)
                     if nd_match:
                         current_name = nd_match.group(1)
                         current_descr = nd_match.group(2)
                         continue 
 
-                    # Check for PID/SN
                     if current_name and line.startswith("PID:"):
                         ps_match = pid_sn_pattern.search(line)
                         if ps_match:
@@ -98,7 +92,7 @@ def parse_inventory_files(folder_path):
                                 'PID': pid,
                                 'NAME': current_name,
                                 'DESCR': current_descr,
-                                'Source File': filename  # <--- Added Filename here
+                                'Source File': filename
                             })
                         
                         current_name = None 
@@ -111,23 +105,29 @@ def parse_inventory_files(folder_path):
     if extracted_data:
         df = pd.DataFrame(extracted_data)
         
-        # A. Sort by 'Capture Time' in Descending order (Newest first)
-        df.sort_values(by='Capture Time', ascending=False, na_position='last', inplace=True)
+        # 1. Create a temporary column for Description Length
+        df['Descr_Len'] = df['DESCR'].astype(str).map(len)
+
+        # 2. Sort by Description Length (Longest first) THEN by Time (Newest first)
+        df.sort_values(by=['Descr_Len', 'Capture Time'], ascending=[False, False], na_position='last', inplace=True)
         
         initial_count = len(df)
         
-        # B. Drop Duplicates (Hardware Key), keeping the First (Newest)
-        df.drop_duplicates(subset=['Hostname', 'SN', 'PID', 'NAME'], keep='first', inplace=True)
+        # --- CRITICAL CHANGE HERE ---
+        # Only look at Hostname and SN. Ignore Name/PID differences.
+        # Because we sorted by length above, this will keep the "Chassis" row
+        # and delete the "Supervisor" row if they share an SN.
+        df.drop_duplicates(subset=['Hostname', 'SN'], keep='first', inplace=True)
+        # ----------------------------
         
         final_count = len(df)
         duplicates_removed = initial_count - final_count
 
-        # C. Cleanup for Excel
-        # Reordered columns to put 'Source File' at the end
+        # 4. Cleanup
         df = df[['Hostname', 'Original Time String', 'SN', 'PID', 'NAME', 'DESCR', 'Source File']]
         df.rename(columns={'Original Time String': 'Capture Time'}, inplace=True)
 
-        output_file = os.path.join(folder_path, 'Inventory_Report_Final.xlsx')
+        output_file = os.path.join(folder_path, 'Inventory_Report_Final_Clean.xlsx')
         df.to_excel(output_file, index=False)
         
         print("-" * 30)
